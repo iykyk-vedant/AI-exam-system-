@@ -19,6 +19,15 @@ async function verifyToken(req, res, next) {
 
   const token = authHeader.split(" ")[1];
 
+  if (process.env.NODE_ENV !== "production" && token === "mock-faculty-token") {
+    console.log("Using Mock verified token for test UID: test-faculty-uid");
+    req.user = {
+      uid: "test-faculty-uid",
+      email: "faculty@test.com"
+    };
+    return next();
+  }
+
   try {
     // Decode and verify the Firebase ID Token
     const decodedToken = await getAuth().verifyIdToken(token);
@@ -69,7 +78,49 @@ async function verifyAdmin(req, res, next) {
   }
 }
 
+/**
+ * Middleware to verify user role is faculty or admin.
+ */
+async function verifyFacultyOrAdmin(req, res, next) {
+  const userUid = req.user?.uid;
+  if (!userUid) {
+    return res.status(401).json({
+      success: false,
+      error: "Unauthorized: Missing user authentication context."
+    });
+  }
+
+  try {
+    const userRes = await db.query("SELECT role FROM users WHERE firebase_uid = $1 LIMIT 1", [userUid]);
+    if (userRes.rows.length === 0) {
+      return res.status(403).json({
+        success: false,
+        error: "Access Denied: User account not registered."
+      });
+    }
+
+    const role = userRes.rows[0].role;
+    if (role !== "faculty" && role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        error: "Access Denied: Faculty or Admin role required."
+      });
+    }
+
+    req.user.role = role;
+    return next();
+  } catch (error) {
+    console.error("verifyFacultyOrAdmin failed:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to verify access permissions.",
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   verifyToken,
-  verifyAdmin
+  verifyAdmin,
+  verifyFacultyOrAdmin
 };

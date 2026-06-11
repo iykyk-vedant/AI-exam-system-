@@ -35,17 +35,25 @@ export default function AttemptExam() {
 
   const timerRef = useRef(null);
 
-  // Fetch exam details on mount
+  // Fetch exam details on mount and start/resume attempt session
   useEffect(() => {
-    const fetchExam = async () => {
+    const fetchExamAndStart = async () => {
       try {
         const headers = await getAuthHeaders();
-        const response = await axios.get(`${API_BASE_URL}/api/exams/${examId}`, headers);
-        if (response.data.success) {
-          const { exam, questions } = response.data.data;
-          setExam(exam);
-          setQuestions(questions);
-          setTimeLeft(exam.duration_minutes * 60);
+        // 1. Fetch exam metadata
+        const metadataRes = await axios.get(`${API_BASE_URL}/api/exams/${examId}`, headers);
+        if (metadataRes.data.success) {
+          const examData = metadataRes.data.data.exam;
+          setExam(examData);
+          
+          // 2. Start or resume the attempt session
+          const startRes = await axios.post(`${API_BASE_URL}/api/exams/${examId}/start`, {}, headers);
+          if (startRes.data.success) {
+            setQuestions(startRes.data.questions);
+            setTimeLeft(startRes.data.timeLeft);
+          } else {
+            setError("Failed to start exam session.");
+          }
         } else {
           setError("Failed to load exam details.");
         }
@@ -57,7 +65,7 @@ export default function AttemptExam() {
       }
     };
 
-    fetchExam();
+    fetchExamAndStart();
   }, [examId]);
 
   // Countdown timer logic

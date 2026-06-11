@@ -198,14 +198,14 @@ async function getExams(req, res) {
     if (role === "faculty" || role === "admin") {
       queryText = `
         SELECT id, title, description, status, passing_percentage, duration_minutes, negative_marking, start_time, end_time, created_at,
-          (SELECT COUNT(*)::integer FROM questions WHERE exam_id = exams.id) as questions_count
+          (SELECT COUNT(*)::integer FROM exam_blueprints WHERE exam_id = exams.id) as questions_count
         FROM exams
         ORDER BY created_at DESC;
       `;
     } else {
       queryText = `
         SELECT id, title, description, status, passing_percentage, duration_minutes, negative_marking, start_time, end_time, created_at,
-          (SELECT COUNT(*)::integer FROM questions WHERE exam_id = exams.id) as questions_count
+          (SELECT COUNT(*)::integer FROM exam_blueprints WHERE exam_id = exams.id) as questions_count
         FROM exams
         WHERE status IN ('published', 'closed')
         ORDER BY created_at DESC;
@@ -237,8 +237,9 @@ async function getExams(req, res) {
 }
 
 /**
- * Fetches details of a specific exam and its questions.
- * Omit correct_option for students.
+ * Fetches details of a specific exam.
+ * For faculty: returns exam details and the linked blueprints.
+ * For students: returns exam details with empty questions array (they must call start endpoint to get questions).
  * Route: GET /api/exams/:examId
  */
 async function getExamDetails(req, res) {
@@ -269,20 +270,29 @@ async function getExamDetails(req, res) {
       });
     }
 
-    // 3. Fetch questions
-    let questionsRes;
+    // 3. Fetch blueprints if faculty/admin
     if (role === "faculty" || role === "admin") {
-      questionsRes = await db.query(
-        "SELECT id, question_text, options, correct_option FROM questions WHERE exam_id = $1",
+      const blueprintsRes = await db.query(
+        `SELECT b.*, eb.position FROM blueprints b
+         JOIN exam_blueprints eb ON b.id = eb.blueprint_id
+         WHERE eb.exam_id = $1
+         ORDER BY eb.position ASC`,
         [examId]
       );
-    } else {
-      questionsRes = await db.query(
-        "SELECT id, question_text, options FROM questions WHERE exam_id = $1",
-        [examId]
-      );
+      return res.status(200).json({
+        success: true,
+        data: {
+          exam: {
+            ...exam,
+            effectiveStatus
+          },
+          blueprints: blueprintsRes.rows,
+          questions: [] // Return empty questions array for compatibility if needed
+        }
+      });
     }
 
+    // For student: Return exam info without questions or blueprints
     return res.status(200).json({
       success: true,
       data: {
@@ -290,7 +300,7 @@ async function getExamDetails(req, res) {
           ...exam,
           effectiveStatus
         },
-        questions: questionsRes.rows
+        questions: []
       }
     });
   } catch (error) {
@@ -339,19 +349,32 @@ async function submitExam(req, res) {
       });
     }
 
+    // 2. Fetch the active ongoing attempt
+    const activeAttemptRes = await db.query(
+      "SELECT * FROM exam_attempts WHERE exam_id = $1 AND student_uid = $2 AND status = 'ongoing' LIMIT 1",
+      [examId, studentUid]
+    );
 
+    if (activeAttemptRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot submit exam: No ongoing exam session was found."
+      });
+    }
 
-    // 3. Fetch questions
+    const attempt = activeAttemptRes.rows[0];
+
+    // 3. Fetch attempt questions (including correct_option)
     const questionsRes = await db.query(
-      "SELECT id, correct_option FROM questions WHERE exam_id = $1",
-      [examId]
+      "SELECT id, correct_option FROM attempt_questions WHERE attempt_id = $1 ORDER BY created_at ASC",
+      [attempt.id]
     );
 
     const questions = questionsRes.rows;
     if (questions.length === 0) {
       return res.status(400).json({
         success: false,
-        error: "Cannot submit exam: Exam has no questions configured."
+        error: "Cannot submit exam: Ongoing attempt has no generated questions."
       });
     }
 
@@ -380,46 +403,33 @@ async function submitExam(req, res) {
     const totalQuestions = questions.length;
     const percentage = totalQuestions > 0 ? Number(((rawScore / totalQuestions) * 100).toFixed(2)) : 0;
     const passed = percentage >= Number(exam.passing_percentage);
+    const finalCgpa = passed ? Math.min(10.00, Number((5.0 + (percentage / 20.0)).toFixed(2))) : null;
 
-    // 5. Determine attempt number
-    const attemptsCountRes = await db.query(
-      "SELECT COUNT(*)::integer FROM exam_attempts WHERE exam_id = $1 AND student_uid = $2",
-      [examId, studentUid]
-    );
-    const attemptNumber = attemptsCountRes.rows[0].count + 1;
-
-
-
-    // 6. Save exam attempt details in database
-    const insertAttemptQuery = `
-      INSERT INTO exam_attempts (
-        exam_id, 
-        student_uid, 
-        score, 
-        total_questions, 
-        percentage, 
-        passed, 
-        attempt_number, 
-        cgpa, 
-        violations_count,
-        submitted_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+    // 5. Update the attempt record to 'submitted'
+    const updateAttemptQuery = `
+      UPDATE exam_attempts
+      SET score = $1,
+          total_questions = $2,
+          percentage = $3,
+          passed = $4,
+          status = 'submitted',
+          cgpa = $5,
+          violations_count = $6,
+          submitted_at = NOW()
+      WHERE id = $7
       RETURNING *;
     `;
-    const finalCgpa = passed ? Math.min(10.00, Number((5.0 + (percentage / 20.0)).toFixed(2))) : null;
     const attemptValues = [
-      examId,
-      studentUid,
       rawScore,
       totalQuestions,
       percentage,
       passed,
-      attemptNumber,
       finalCgpa,
-      violationsCount !== undefined ? parseInt(violationsCount) : 0
+      violationsCount !== undefined ? parseInt(violationsCount) : 0,
+      attempt.id
     ];
 
-    await db.query(insertAttemptQuery, attemptValues);
+    await db.query(updateAttemptQuery, attemptValues);
 
     return res.status(200).json({
       success: true,
@@ -428,7 +438,7 @@ async function submitExam(req, res) {
         totalQuestions,
         percentage,
         passed,
-        attemptNumber,
+        attemptNumber: attempt.attempt_number,
         violationsCount: violationsCount !== undefined ? parseInt(violationsCount) : 0
       }
     });
@@ -465,7 +475,7 @@ async function getExamResults(req, res) {
         u.email as student_email
       FROM exam_attempts ea
       LEFT JOIN users u ON ea.student_uid = u.firebase_uid
-      WHERE ea.exam_id = $1
+      WHERE ea.exam_id = $1 AND ea.status = 'submitted'
       ORDER BY ea.submitted_at DESC;
     `;
     const dbResult = await db.query(queryText, [examId]);
@@ -506,7 +516,7 @@ async function getStudentAttempts(req, res) {
         e.title as exam_title
       FROM exam_attempts ea
       JOIN exams e ON ea.exam_id = e.id
-      WHERE ea.student_uid = $1
+      WHERE ea.student_uid = $1 AND ea.status = 'submitted'
       ORDER BY ea.submitted_at DESC;
     `;
     const dbResult = await db.query(queryText, [studentUid]);
@@ -524,6 +534,234 @@ async function getStudentAttempts(req, res) {
   }
 }
 
+async function startExam(req, res) {
+  const { examId } = req.params;
+  const studentUid = req.user.uid;
+
+  try {
+    // 1. Fetch exam information
+    const examRes = await db.query("SELECT * FROM exams WHERE id = $1 LIMIT 1", [examId]);
+    if (examRes.rows.length === 0) {
+      return res.status(404).json({ success: false, error: "Exam not found." });
+    }
+
+    const exam = examRes.rows[0];
+    const effectiveStatus = getEffectiveStatus(exam);
+
+    if (effectiveStatus !== "published") {
+      return res.status(403).json({
+        success: false,
+        error: "Access Forbidden: This exam is currently closed, scheduled, or archived."
+      });
+    }
+
+    // 2. Check for active ongoing attempt
+    const activeAttemptRes = await db.query(
+      "SELECT * FROM exam_attempts WHERE exam_id = $1 AND student_uid = $2 AND status = 'ongoing' LIMIT 1",
+      [examId, studentUid]
+    );
+
+    if (activeAttemptRes.rows.length > 0) {
+      const attempt = activeAttemptRes.rows[0];
+      const questionsRes = await db.query(
+        "SELECT id, blueprint_id, question_text, options FROM attempt_questions WHERE attempt_id = $1 ORDER BY created_at ASC",
+        [attempt.id]
+      );
+
+      // Calculate time remaining
+      const startedAt = new Date(attempt.created_at).getTime();
+      const now = new Date().getTime();
+      const secondsElapsed = Math.floor((now - startedAt) / 1000);
+      const totalSeconds = exam.duration_minutes * 60;
+      const remainingSeconds = Math.max(0, totalSeconds - secondsElapsed);
+
+      return res.status(200).json({
+        success: true,
+        attemptId: attempt.id,
+        questions: questionsRes.rows,
+        timeLeft: remainingSeconds
+      });
+    }
+
+    // 3. Start a new attempt
+    // Count previous submitted attempts
+    const countRes = await db.query(
+      "SELECT COUNT(*)::integer FROM exam_attempts WHERE exam_id = $1 AND student_uid = $2 AND status = 'submitted'",
+      [examId, studentUid]
+    );
+    const attemptNumber = countRes.rows[0].count + 1;
+
+    // Create ongoing attempt
+    const insertAttemptRes = await db.query(
+      `INSERT INTO exam_attempts (
+        exam_id, student_uid, score, total_questions, percentage, passed, attempt_number, status, cgpa, violations_count, created_at, submitted_at
+      ) VALUES ($1, $2, 0, 0, 0, false, $3, 'ongoing', null, 0, NOW(), null) RETURNING *`,
+      [examId, studentUid, attemptNumber]
+    );
+    const newAttempt = insertAttemptRes.rows[0];
+
+    // Get exam blueprints
+    const blueprintsRes = await db.query(
+      `SELECT b.* FROM blueprints b
+       JOIN exam_blueprints eb ON b.id = eb.blueprint_id
+       WHERE eb.exam_id = $1
+       ORDER BY eb.position ASC`,
+      [examId]
+    );
+
+    const blueprints = blueprintsRes.rows;
+    if (blueprints.length === 0) {
+      // Clean up attempt
+      await db.query("DELETE FROM exam_attempts WHERE id = $1", [newAttempt.id]);
+      return res.status(400).json({
+        success: false,
+        error: "Cannot start exam: No blueprints have been linked to this exam."
+      });
+    }
+
+    const { generateVariant } = require("../utils/variantEngine");
+    const generatedQuestions = [];
+
+    // Generate variants and insert into attempt_questions
+    for (const bp of blueprints) {
+      const seed = Math.floor(Math.random() * 1000000000).toString();
+      const variant = generateVariant(bp, seed);
+
+      const qRes = await db.query(
+        `INSERT INTO attempt_questions (
+          attempt_id, blueprint_id, variant_seed, question_text, options, correct_option, selected_variables
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, blueprint_id, question_text, options`,
+        [
+          newAttempt.id,
+          bp.id,
+          seed,
+          variant.questionText,
+          variant.options,
+          variant.correctOption,
+          JSON.stringify(variant.selectedVariables)
+        ]
+      );
+      generatedQuestions.push(qRes.rows[0]);
+    }
+
+    // Update total questions count in attempt
+    await db.query(
+      "UPDATE exam_attempts SET total_questions = $1 WHERE id = $2",
+      [generatedQuestions.length, newAttempt.id]
+    );
+
+    return res.status(200).json({
+      success: true,
+      attemptId: newAttempt.id,
+      questions: generatedQuestions,
+      timeLeft: exam.duration_minutes * 60
+    });
+
+  } catch (error) {
+    console.error("Failed to start exam:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to initialize exam session.",
+      details: error.message
+    });
+  }
+}
+
+async function getExamQuestions(req, res) {
+  const { examId } = req.params;
+  const studentUid = req.user.uid;
+
+  try {
+    const activeAttemptRes = await db.query(
+      "SELECT * FROM exam_attempts WHERE exam_id = $1 AND student_uid = $2 AND status = 'ongoing' LIMIT 1",
+      [examId, studentUid]
+    );
+
+    if (activeAttemptRes.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Exam session not started yet. Call start endpoint first."
+      });
+    }
+
+    const attempt = activeAttemptRes.rows[0];
+    const questionsRes = await db.query(
+      "SELECT id, blueprint_id, question_text, options FROM attempt_questions WHERE attempt_id = $1 ORDER BY created_at ASC",
+      [attempt.id]
+    );
+
+    // Calculate time remaining
+    const examRes = await db.query("SELECT duration_minutes FROM exams WHERE id = $1 LIMIT 1", [examId]);
+    const exam = examRes.rows[0];
+    const startedAt = new Date(attempt.created_at).getTime();
+    const now = new Date().getTime();
+    const secondsElapsed = Math.floor((now - startedAt) / 1000);
+    const totalSeconds = (exam ? exam.duration_minutes : 30) * 60;
+    const remainingSeconds = Math.max(0, totalSeconds - secondsElapsed);
+
+    return res.status(200).json({
+      success: true,
+      attemptId: attempt.id,
+      questions: questionsRes.rows,
+      timeLeft: remainingSeconds
+    });
+
+  } catch (error) {
+    console.error("Failed to fetch exam questions:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to retrieve ongoing exam questions.",
+      details: error.message
+    });
+  }
+}
+
+async function updateExamBlueprints(req, res) {
+  const { examId } = req.params;
+  const { blueprintIds } = req.body;
+
+  if (!blueprintIds || !Array.isArray(blueprintIds)) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing required parameters: blueprintIds must be an array."
+    });
+  }
+
+  try {
+    const examCheck = await db.query("SELECT status FROM exams WHERE id = $1 LIMIT 1", [examId]);
+    if (examCheck.rows.length === 0) {
+      return res.status(404).json({ success: false, error: "Exam not found." });
+    }
+    if (examCheck.rows[0].status !== "draft") {
+      return res.status(400).json({
+        success: false,
+        error: "Cannot modify blueprints of an exam that is no longer in draft state."
+      });
+    }
+
+    await db.query("DELETE FROM exam_blueprints WHERE exam_id = $1", [examId]);
+
+    for (let i = 0; i < blueprintIds.length; i++) {
+      await db.query(
+        "INSERT INTO exam_blueprints (exam_id, blueprint_id, position) VALUES ($1, $2, $3)",
+        [examId, blueprintIds[i], i]
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully linked ${blueprintIds.length} blueprints to the exam.`
+    });
+  } catch (error) {
+    console.error("Failed to update exam blueprints:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to update exam blueprints.",
+      details: error.message
+    });
+  }
+}
+
 module.exports = {
   createExam,
   addQuestions,
@@ -532,5 +770,8 @@ module.exports = {
   getExamDetails,
   submitExam,
   getExamResults,
-  getStudentAttempts
+  getStudentAttempts,
+  startExam,
+  getExamQuestions,
+  updateExamBlueprints
 };

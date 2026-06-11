@@ -15,7 +15,7 @@ pool.on("connect", () => {
 
 pool.on("error", (err) => {
   console.error("Unexpected error on idle PostgreSQL client:", err);
-  process.exit(-1);
+  // Do not call process.exit(-1) to prevent the backend from crashing when idle Neon connections are closed.
 });
 
 module.exports = {
