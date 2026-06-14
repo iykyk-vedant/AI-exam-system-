@@ -1,4 +1,6 @@
 const db = require("../config/db");
+const crypto = require("crypto");
+const { generateAndStoreVariant } = require("../services/variantService");
 require("dotenv").config();
 
 /**
@@ -619,29 +621,22 @@ async function startExam(req, res) {
       });
     }
 
-    const { generateVariant } = require("../utils/variantEngine");
     const generatedQuestions = [];
 
-    // Generate variants and insert into attempt_questions
+    // Generate variants and insert into attempt_questions using variantService
     for (const bp of blueprints) {
-      const seed = Math.floor(Math.random() * 1000000000).toString();
-      const variant = generateVariant(bp, seed);
-
-      const qRes = await db.query(
-        `INSERT INTO attempt_questions (
-          attempt_id, blueprint_id, variant_seed, question_text, options, correct_option, selected_variables
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, blueprint_id, question_text, options`,
-        [
-          newAttempt.id,
-          bp.id,
-          seed,
-          variant.questionText,
-          variant.options,
-          variant.correctOption,
-          JSON.stringify(variant.selectedVariables)
-        ]
-      );
-      generatedQuestions.push(qRes.rows[0]);
+      try {
+        const variant = await generateAndStoreVariant({
+          studentUid,
+          blueprint: bp,
+          examId,
+          attemptId: newAttempt.id
+        });
+        generatedQuestions.push(variant);
+      } catch (variantErr) {
+        console.error(`Failed to generate variant for blueprint ${bp.id}:`, variantErr);
+        // Continue with other blueprints
+      }
     }
 
     // Update total questions count in attempt
