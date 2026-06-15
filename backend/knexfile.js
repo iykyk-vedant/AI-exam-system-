@@ -1,10 +1,10 @@
-require("dotenv").config();
+const envConfig = require("./config/env");
 
 module.exports = {
   development: {
     client: 'pg',
     connection: {
-      connectionString: process.env.DATABASE_URL,
+      connectionString: envConfig.database.url,
       ssl: { rejectUnauthorized: false }
     },
     migrations: {
@@ -14,7 +14,7 @@ module.exports = {
   production: {
     client: 'pg',
     connection: {
-      connectionString: process.env.DATABASE_URL,
+      connectionString: envConfig.database.url,
       ssl: { rejectUnauthorized: false }
     },
     migrations: {

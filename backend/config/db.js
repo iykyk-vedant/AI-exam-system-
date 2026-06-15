@@ -1,9 +1,9 @@
 const { Pool } = require("pg");
-require("dotenv").config();
+const envConfig = require("./env");
 
 // Initialize PG Connection Pool using Neon DB URL
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: envConfig.database.url,
   ssl: {
     rejectUnauthorized: false // Required for secure Neon PostgreSQL connection
   }

@@ -1,9 +1,11 @@
 /**
  * VectorService: Qdrant vector database operations
  */
+const { QdrantClient } = require('@qdrant/js-client-rest');
+const envConfig = require('../config/env');
 const axios = require('axios');
 
-const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
+const QDRANT_URL = envConfig.qdrant.url;
 const COLLECTION_NAME = 'document_chunks';
 
 async function createCollection() {

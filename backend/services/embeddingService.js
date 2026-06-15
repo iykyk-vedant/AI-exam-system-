@@ -2,8 +2,9 @@
  * EmbeddingService: generates embeddings via OpenAI API
  */
 const axios = require('axios');
+const envConfig = require('../config/env');
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const OPENAI_API_KEY = envConfig.openai.apiKey;
 const EMBEDDING_MODEL = 'text-embedding-3-small';
 const OPENAI_URL = 'https://api.openai.com/v1/embeddings';
 

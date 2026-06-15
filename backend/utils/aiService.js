@@ -1,4 +1,5 @@
 const axios = require("axios");
+const envConfig = require("../config/env");
 
 /**
  * Custom Seeded Random Heuristic for quality/confidence scoring.
@@ -194,7 +195,7 @@ ${truncated}
  * Returns a structured JSON hierarchy of the document.
  */
 async function parseDocumentStructure(text) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = envConfig.gemini.apiKey;
   if (apiKey && apiKey.trim() !== "") {
     console.log("Using Google Gemini API for document structure parsing...");
     return geminiParseDocumentStructure(text, apiKey);
@@ -432,7 +433,7 @@ ${structureText}
  * @param {object|string} input - Parsed document structure or raw text
  */
 async function extractConcepts(input) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = envConfig.gemini.apiKey;
   if (apiKey && apiKey.trim() !== "") {
     console.log("Using Google Gemini API for structured topic and concept extraction...");
     return geminiExtractConcepts(input, apiKey);
@@ -551,7 +552,7 @@ ${JSON.stringify(rawConcepts.map(c => c.raw_concept || c.concept))}
  * Main service endpoint for concept normalization layer.
  */
 async function normalizeConcepts(rawConcepts) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = envConfig.gemini.apiKey;
   if (apiKey && apiKey.trim() !== "") {
     console.log("Using Google Gemini API for concept normalization...");
     return geminiNormalizeConcepts(rawConcepts, apiKey);
@@ -799,7 +800,7 @@ Do not return any explanation or markdown formatting wrappers, return ONLY the r
  * Main service endpoint for Stage 2 blueprint generation.
  */
 async function generateBlueprintsForConcept(concept) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = envConfig.gemini.apiKey;
   if (apiKey && apiKey.trim() !== "") {
     console.log("Using Google Gemini API for blueprint generation...");
     return geminiGenerateBlueprintsForConcept(concept, apiKey);
