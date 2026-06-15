@@ -19,14 +19,6 @@ async function verifyToken(req, res, next) {
 
   const token = authHeader.split(" ")[1];
 
-  if (process.env.NODE_ENV !== "production" && token === "mock-faculty-token") {
-    console.log("Using Mock verified token for test UID: test-faculty-uid");
-    req.user = {
-      uid: "test-faculty-uid",
-      email: "faculty@test.com"
-    };
-    return next();
-  }
 
   try {
     // Decode and verify the Firebase ID Token

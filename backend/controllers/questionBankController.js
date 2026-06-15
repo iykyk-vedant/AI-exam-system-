@@ -405,6 +405,7 @@ async function generateBlueprints(req, res) {
     // 2. Call AI Service to generate blueprints (MCQ and Short Answer)
     const blueprints = await generateBlueprintsForConcept(concept);
 
+    await db.query('BEGIN');
     // 3. Save blueprints into blueprint_candidates linked back to concept
     const insertedBlueprints = [];
     for (const bp of blueprints) {
@@ -426,15 +427,17 @@ async function generateBlueprints(req, res) {
       const bpRes = await db.query(insertQuery, values);
       insertedBlueprints.push(bpRes.rows[0]);
     }
+    await db.query('COMMIT');
 
     return res.status(200).json({
       success: true,
-      message: "Successfully generated 2 candidate blueprints for the concept.",
+      message: "Successfully generated candidate blueprints for the concept.",
       data: insertedBlueprints
     });
 
   } catch (error) {
-    console.error("Failed to generate blueprints for concept:", error);
+    try { await db.query('ROLLBACK'); } catch (_) {}
+    console.error("Failed to generate blueprints for concept:", error.message);
     return res.status(500).json({
       success: false,
       error: "Blueprint generation failed.",
@@ -486,6 +489,7 @@ async function generateBlueprintsBulk(req, res) {
       const blueprints = await generateBlueprintsForConcept(concept);
 
       // 3. Save blueprints
+      await db.query('BEGIN');
       for (const bp of blueprints) {
         const insertQuery = `
           INSERT INTO blueprint_candidates (
@@ -505,10 +509,12 @@ async function generateBlueprintsBulk(req, res) {
         await db.query(insertQuery, values);
         generated++;
       }
+      await db.query('COMMIT');
 
       processed++;
     } catch (err) {
-      console.error(`Failed to bulk generate blueprints for concept ID ${id}:`, err);
+      try { await db.query('ROLLBACK'); } catch (_) {}
+      console.error(`Failed to bulk generate blueprints for concept ID ${id}:`, err.message);
       failed++;
     }
   }
@@ -616,6 +622,7 @@ async function approveCandidate(req, res) {
 
     const bp = cand.generated_json;
 
+    await db.query('BEGIN');
     // 2. Insert into blueprints
     const insertQuery = `
       INSERT INTO blueprints (
@@ -644,6 +651,8 @@ async function approveCandidate(req, res) {
     // 3. Mark candidate as APPROVED
     await db.query("UPDATE blueprint_candidates SET status = 'APPROVED' WHERE id = $1", [id]);
 
+    await db.query('COMMIT');
+
     return res.status(200).json({
       success: true,
       message: "Blueprint candidate approved successfully and added to library.",
@@ -651,7 +660,8 @@ async function approveCandidate(req, res) {
     });
 
   } catch (error) {
-    console.error("Failed to approve candidate blueprint:", error);
+    try { await db.query('ROLLBACK'); } catch (_) {}
+    console.error("Failed to approve candidate blueprint:", error.message);
     return res.status(500).json({
       success: false,
       error: "Failed to approve candidate blueprint.",

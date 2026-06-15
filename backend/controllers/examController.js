@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const crypto = require("crypto");
 const { generateAndStoreVariant } = require("../services/variantService");
+const format = require("pg-format");
 require("dotenv").config();
 
 /**
@@ -110,6 +111,7 @@ async function addQuestions(req, res) {
     }
 
     // 2. Insert questions
+    const insertValues = [];
     for (const q of questions) {
       if (!q.questionText || !q.options || !Array.isArray(q.options) || q.correctOption === undefined) {
         return res.status(400).json({
@@ -117,12 +119,14 @@ async function addQuestions(req, res) {
           error: "Invalid question format: questionText, options (array), and correctOption are required."
         });
       }
-
-      await db.query(
-        "INSERT INTO questions (exam_id, question_text, options, correct_option) VALUES ($1, $2, $3, $4)",
-        [examId, q.questionText, q.options, parseInt(q.correctOption)]
-      );
+      insertValues.push([examId, q.questionText, '{' + q.options.map(opt => `"${opt.replace(/"/g, '\\"')}"`).join(',') + '}', parseInt(q.correctOption)]);
     }
+
+    const query = format(
+      "INSERT INTO questions (exam_id, question_text, options, correct_option) VALUES %L",
+      insertValues
+    );
+    await db.query(query);
 
     return res.status(200).json({
       success: true,
@@ -392,8 +396,6 @@ async function submitExam(req, res) {
         } else {
           incorrectCount += 1;
         }
-      } else {
-        incorrectCount += 1; // Unanswered counts as incorrect
       }
     }
 
@@ -586,6 +588,8 @@ async function startExam(req, res) {
     }
 
     // 3. Start a new attempt
+    await db.query('BEGIN');
+
     // Count previous submitted attempts
     const countRes = await db.query(
       "SELECT COUNT(*)::integer FROM exam_attempts WHERE exam_id = $1 AND student_uid = $2 AND status = 'submitted'",
@@ -615,6 +619,7 @@ async function startExam(req, res) {
     if (blueprints.length === 0) {
       // Clean up attempt
       await db.query("DELETE FROM exam_attempts WHERE id = $1", [newAttempt.id]);
+      await db.query('COMMIT');
       return res.status(400).json({
         success: false,
         error: "Cannot start exam: No blueprints have been linked to this exam."
@@ -635,7 +640,12 @@ async function startExam(req, res) {
         generatedQuestions.push(variant);
       } catch (variantErr) {
         console.error(`Failed to generate variant for blueprint ${bp.id}:`, variantErr);
-        // Continue with other blueprints
+        await db.query('ROLLBACK');
+        return res.status(500).json({
+          success: false,
+          error: "Failed to initialize exam session due to variant generation failure.",
+          details: variantErr.message
+        });
       }
     }
 
@@ -644,6 +654,8 @@ async function startExam(req, res) {
       "UPDATE exam_attempts SET total_questions = $1 WHERE id = $2",
       [generatedQuestions.length, newAttempt.id]
     );
+
+    await db.query('COMMIT');
 
     return res.status(200).json({
       success: true,
@@ -734,21 +746,23 @@ async function updateExamBlueprints(req, res) {
       });
     }
 
+    await db.query('BEGIN');
     await db.query("DELETE FROM exam_blueprints WHERE exam_id = $1", [examId]);
 
-    for (let i = 0; i < blueprintIds.length; i++) {
-      await db.query(
-        "INSERT INTO exam_blueprints (exam_id, blueprint_id, position) VALUES ($1, $2, $3)",
-        [examId, blueprintIds[i], i]
-      );
+    if (blueprintIds.length > 0) {
+      const insertValues = blueprintIds.map((id, i) => [examId, id, i]);
+      const query = format("INSERT INTO exam_blueprints (exam_id, blueprint_id, position) VALUES %L", insertValues);
+      await db.query(query);
     }
+    await db.query('COMMIT');
 
     return res.status(200).json({
       success: true,
       message: `Successfully linked ${blueprintIds.length} blueprints to the exam.`
     });
   } catch (error) {
-    console.error("Failed to update exam blueprints:", error);
+    try { await db.query('ROLLBACK'); } catch (_) {}
+    console.error("Failed to update exam blueprints:", error.message);
     return res.status(500).json({
       success: false,
       error: "Failed to update exam blueprints.",

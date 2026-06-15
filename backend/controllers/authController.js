@@ -52,8 +52,8 @@ async function registerUser(req, res) {
       data: dbResult.rows[0]
     });
   } catch (error) {
-    console.error("Failed to register user in database:", error);
-    return res.status(550).json({
+    console.error("Failed to register user in database:", error.message);
+    return res.status(500).json({
       success: false,
       error: "Failed to persist user profile in database.",
       details: error.message
@@ -86,7 +86,7 @@ async function loginUser(req, res) {
       data: dbResult.rows[0]
     });
   } catch (error) {
-    console.error("Login verification failed:", error);
+    console.error("Login verification failed:", error.message);
     return res.status(500).json({
       success: false,
       error: "Failed to process login verification.",
@@ -125,7 +125,7 @@ async function getCurrentUser(req, res) {
       role: user.role
     });
   } catch (error) {
-    console.error("GetCurrentUser failed:", error);
+    console.error("GetCurrentUser failed:", error.message);
     return res.status(500).json({
       success: false,
       error: "Failed to hydrate session.",
